@@ -2,6 +2,11 @@
 
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
+import { convertLessonJsonToProject } from "./importer";
+import { data } from "./data";
+
+const project = convertLessonJsonToProject(data, { fps: 30, width: 1920, height: 1080 });
+console.log("Imported project:", JSON.stringify(project, null, 2));
 
 /**
  * Mini Timeline Editor v3 (final)
@@ -458,7 +463,7 @@ export default function App() {
                 if (clip.type === "shape") {
                   const sh = clip.shape!; let content: React.ReactNode = null;
                   if (sh.kind === "triangle") { content = <div style={{ width: 0, height: 0, borderLeft: `${pxW / 2}px solid transparent`, borderRight: `${pxW / 2}px solid transparent`, borderBottom: `${pxH}px solid ${sh.fill || "#ef4444"}` }} />; }
-                  else if (sh.kind === "circle") { content = <div style={{ width: pxW, height: pxH, background: sh.fill || "#22c55e", borderRadius: "50%", border: sh.stroke ? `${sh.strokeWidth || 2}px solid ${sh.stroke}` : undefined }} />; }
+                  else if (sh.kind === "circle") { content = <div className="-translate-y-1/2 -translate-x-1/2" style={{ width: pxW, height: pxH, background: sh.fill || "#22c55e", borderRadius: "50%", border: sh.stroke ? `${sh.strokeWidth || 2}px solid ${sh.stroke}` : undefined }} />; }
                   else { content = <div style={{ width: pxW, height: pxH, background: sh.fill || "#22c55e", borderRadius: (sh.radius || 0) + "px", border: sh.stroke ? `${sh.strokeWidth || 2}px solid ${sh.stroke}` : undefined }} />; }
                   return (<motion.div key={clip.id} {...inVar} {...outVar} transition={trans} style={baseStyle}>
                     <div className={`relative ${sel ? "ring-2 ring-sky-400" : hasHi ? "ring-2 ring-amber-400" : ""}`} onMouseDown={(e) => startCanvasMove(e, clip)} style={{ cursor: "move" }}>
@@ -474,190 +479,6 @@ export default function App() {
           </motion.div>
         </div>
 
-        {/* Timeline */}
-        <div className="flex-1 grid grid-rows-[32px_1fr] h-64 overflow-auto nice-scroll" onScroll={(e) => {
-          setTlScrollLeft(e.currentTarget.scrollLeft);
-          setTlClientWidth(e.currentTarget.clientWidth);
-        }}>
-          {/* RULER có tick động + đồng bộ scroll */}
-          <div
-            className="relative bg-slate-900 border-b border-slate-800 select-none"
-            onClick={onRulerClick}
-            ref={rulerRef}
-          >
-            <div className="absolute left-0 top-0 bottom-0 w-40 flex items-center justify-center text-xs text-slate-400">
-              Timeline
-            </div>
-
-            {/* Vùng chứa tick: rộng theo duration*scale, tịnh tiến theo scrollLeft để khớp với tracks */}
-            <div
-              className="ml-40 h-full relative"
-              style={{
-                width: duration * scale + 200,
-                transform: `translateX(${-tlScrollLeft}px)`, // đồng bộ với tracks
-              }}
-            >
-              {(() => {
-                // ====== PICK STEP ======
-                const NICE_STEPS = [0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600]; // giây
-                const MIN_LABEL_PX = 64; // tối thiểu px giữa 2 nhãn major
-                const MIN_MINOR_PX = 8;  // tối thiểu px giữa 2 minor
-
-                const pickStep = (pxPerSec: number, minPx = MIN_LABEL_PX) => {
-                  for (const s of NICE_STEPS) if (s * pxPerSec >= minPx) return s;
-                  return NICE_STEPS[NICE_STEPS.length - 1];
-                };
-                const fmtTick = (sec: number, step: number) => {
-                  if (step < 1) {
-                    const digits = step < 0.1 ? 2 : 1;
-                    return `${sec.toFixed(digits)}s`;
-                  }
-                  return fmtTime(sec);
-                };
-
-                // ====== VISIBLE RANGE ======
-                const gutter = 40; // px (cột trái)
-                const visibleWidthPx = Math.max(0, tlClientWidth - gutter);
-                const startSec = Math.max(0, tlScrollLeft / scale);
-                const endSec = Math.min(duration, (tlScrollLeft + visibleWidthPx) / scale);
-
-                const majorStep = pickStep(scale, MIN_LABEL_PX);
-                const minorCand = majorStep / 5;
-                const minorStep = minorCand * scale >= MIN_MINOR_PX ? minorCand : 0;
-
-                const ticks: JSX.Element[] = [];
-
-                // Minor ticks
-                if (minorStep > 0) {
-                  const firstMinor = Math.floor(startSec / minorStep) * minorStep;
-                  for (let t = firstMinor; t <= endSec; t += minorStep) {
-                    ticks.push(
-                      <div
-                        key={`mn-${t.toFixed(3)}`}
-                        className="absolute top-0 h-full border-l border-slate-800/70"
-                        style={{ left: t * scale }}
-                      />
-                    );
-                  }
-                }
-
-                // Major ticks + label
-                const firstMajor = Math.floor(startSec / majorStep) * majorStep;
-                for (let t = firstMajor; t <= endSec; t += majorStep) {
-                  ticks.push(
-                    <div
-                      key={`mj-${t.toFixed(3)}`}
-                      className="absolute top-0 h-full border-l border-slate-700"
-                      style={{ left: t * scale }}
-                    >
-                      <div className="-translate-x-1/2 px-1 text-[10px] text-slate-300">
-                        {fmtTick(Math.max(0, t), majorStep)}
-                      </div>
-                    </div>
-                  );
-                }
-
-                // Playhead
-                ticks.push(
-                  <div
-                    key="playhead"
-                    className="absolute top-0 bottom-0 w-px bg-rose-400"
-                    style={{ left: time * scale }}
-                  />
-                );
-
-                return ticks;
-              })()}
-            </div>
-          </div>
-
-          {/* TRACKS: scroll ngang & dọc + cập nhật scroll state để ruler biết vùng hiển thị */}
-          <div
-            ref={tlRef}
-            className="relative bg-slate-950 overflow-auto"
-
-            onMouseDown={() => setSelectedId(null)}
-          >
-            {/* Cột nhãn trái */}
-            <div className="absolute left-0 top-0 bottom-0 w-40 border-r border-slate-800 text-xs text-slate-400 bg-slate-950">
-              {slide.clips.map((c) => (
-                <div
-                  key={c.id}
-                  className="h-10 flex items-center justify-center border-b border-slate-800 truncate"
-                  title={c.type}
-                >
-                  {c.type}
-                </div>
-              ))}
-            </div>
-
-            {/* Nội dung timeline: rộng theo duration*scale */}
-            <div
-              className="ml-40 relative"
-              style={{
-                width: duration * scale + 200,
-                height: rowH * Math.max(1, slide.clips.length),
-              }}
-            >
-              {slide.clips.map((c, idx) => {
-                const left = c.start * scale;
-                const width = Math.max(4, c.duration * scale);
-                const selected = selectedId === c.id;
-                return (
-                  <div key={c.id} className="h-10 border-b border-slate-900/60 relative">
-                    <div
-                      className={`absolute top-1 h-6 rounded-md ${selected ? "bg-sky-500" : "bg-slate-700 hover:bg-slate-600"
-                        } cursor-grab active:cursor-grabbing`}
-                      style={{ left, width }}
-                      onMouseDown={(e) => onMouseDownClip(e, c, "move", idx)}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setSelectedId(c.id);
-                      }}
-                      title={`${c.name || c.id} (${fmtTime(c.start)} - ${fmtTime(
-                        c.start + c.duration
-                      )})`}
-                    >
-                      <div
-                        className="absolute left-0 top-0 bottom-0 w-2 cursor-ew-resize bg-white/10 rounded-l"
-                        onMouseDown={(e) => onMouseDownClip(e, c, "resize-left", idx)}
-                      />
-                      <div className="px-2 text-[10px] truncate leading-6">
-                        {c.name || c.id}
-                      </div>
-                      <div
-                        className="absolute right-0 top-0 bottom-0 w-2 cursor-ew-resize bg-white/10 rounded-r"
-                        onMouseDown={(e) => onMouseDownClip(e, c, "resize-right", idx)}
-                      />
-                    </div>
-
-                    {/* Action bars */}
-                    <div className="absolute left-0 right-0 top-7 h-2">
-                      {(c.actions || []).map((a) => {
-                        const aLeft = a.start * scale;
-                        const aWidth = Math.max(2, (a.end - a.start) * scale);
-                        const color =
-                          a.type === "appear"
-                            ? "bg-emerald-400"
-                            : a.type === "move"
-                              ? "bg-indigo-400"
-                              : "bg-amber-400";
-                        return (
-                          <div
-                            key={a.id}
-                            className={`absolute h-2 rounded ${color}`}
-                            style={{ left: aLeft, width: aWidth }}
-                            title={`${a.type} ${fmtTime(a.start)}-${fmtTime(a.end)}`}
-                          />
-                        );
-                      })}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        </div>
 
 
       </div>
