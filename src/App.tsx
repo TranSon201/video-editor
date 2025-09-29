@@ -1,4 +1,6 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+
+
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 
 /**
@@ -100,12 +102,67 @@ export default function App() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
   const [dragTL, setDragTL] = useState<{ id: string; mode: "move" | "resize-left" | "resize-right"; startX: number; startY: number; initStart: number; initDur: number; initIndex: number } | null>(null);
-  const rowH = 40; const scale = 40; // px / sec
+  const rowH = 40;
+  // const scale = 40; // px / sec
 
   type DragCanvasState = { id: string; mode: "move" | "resize"; corner?: "nw" | "ne" | "sw" | "se"; startX: number; startY: number; init: { x: number; y: number; w?: number; h?: number; fontSize?: number }; canvasW: number; canvasH: number } | null;
   const [dragCanvas, setDragCanvas] = useState<DragCanvasState>(null);
   const canvasRef = useRef<HTMLDivElement>(null);
+  // Zoom: dùng chung biến scale bạn đang dùng
+  const [scale, setScale] = useState<number>(80); // px / giây (tuỳ bạn)
+  const tlRef = useRef<HTMLDivElement | null>(null);
 
+  // clamp + nút zoom
+  const zoomClamp = (v: number) => Math.min(Math.max(Math.round(v / 5) * 5, 20), 400);
+
+  // Ctrl/⌘/Alt + wheel để zoom ở vùng timeline
+  useEffect(() => {
+    const el = tlRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      if (e.ctrlKey || e.metaKey || e.altKey) {
+        e.preventDefault();
+        setScale(s => zoomClamp(s + (e.deltaY > 0 ? -10 : 10)));
+      }
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel as any);
+  }, []);
+
+  // Khi đổi zoom, cố gắng giữ playhead trong viewport
+  useEffect(() => {
+    const el = tlRef.current;
+    if (!el) return;
+    const target = time * scale - 200;
+    if (target > 0) el.scrollLeft = target;
+  }, [scale, time]);
+  // --- RULER helpers ---
+
+  // Scroll sync (để ruler trượt theo tracks)
+  const [tlScrollLeft, setTlScrollLeft] = useState(0);
+  const [tlClientWidth, setTlClientWidth] = useState(0);
+  // Khởi tạo width/scroll ngay khi mount
+  useLayoutEffect(() => {
+    const el = tlRef.current;
+    if (!el) return;
+    setTlClientWidth(el.clientWidth);
+    setTlScrollLeft(el.scrollLeft);
+  }, []);
+
+  // Theo dõi resize để cập nhật tlClientWidth
+  useEffect(() => {
+    const el = tlRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver((entries) => {
+      for (const e of entries) {
+        setTlClientWidth(e.contentRect.width);
+      }
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  // autosave
   useEffect(() => { localStorage.setItem("mte_autosave_v3", JSON.stringify(project)); }, [project]);
 
   const duration = slide?.duration || 0;
@@ -193,6 +250,8 @@ export default function App() {
       }))
     }));
   };
+
+
   const addClip = (type: EntityType) => {
     if (!slide) return; const id = `${type}_${Math.random().toString(36).slice(2, 7)}`;
     const maxLayer = Math.max(0, ...slide.clips.map(c => c.layer));
@@ -294,7 +353,7 @@ export default function App() {
 
     <div className="flex-1 grid grid-cols-[300px_1fr_360px] overflow-hidden">
       {/* Left */}
-      <div className="border-r border-slate-800 p-3 space-y-4 overflow-auto">
+      <div className="border-r border-slate-800 p-3 space-y-4 overflow-auto nice-scroll">
         <div>
           <div className="text-xs uppercase text-slate-400 mb-2">Slides (drag to reorder)</div>
           <div>{project.slides.map((s, i) => (
@@ -416,45 +475,191 @@ export default function App() {
         </div>
 
         {/* Timeline */}
-        <div className="flex-1 grid grid-rows-[32px_1fr]">
-          <div className="relative bg-slate-900 border-b border-slate-800" onClick={onRulerClick} ref={rulerRef}>
-            <div className="absolute left-0 top-0 bottom-0 w-40 flex items-center justify-center text-xs text-slate-400">Timeline</div>
-            <div className="ml-40 h-full relative">
-              {Array.from({ length: Math.ceil(duration) + 1 }).map((_, i) => (
-                <div key={i} className="absolute top-0 h-full border-l border-slate-800 text-[10px] text-slate-400" style={{ left: i * scale }}>
-                  <div className="-translate-x-1/2 px-1">{fmtTime(i)}</div>
-                </div>
-              ))}
-              <div className="absolute top-0 bottom-0 w-px bg-rose-400" style={{ left: time * scale }} />
+        <div className="flex-1 grid grid-rows-[32px_1fr] h-64 overflow-auto nice-scroll" onScroll={(e) => {
+          setTlScrollLeft(e.currentTarget.scrollLeft);
+          setTlClientWidth(e.currentTarget.clientWidth);
+        }}>
+          {/* RULER có tick động + đồng bộ scroll */}
+          <div
+            className="relative bg-slate-900 border-b border-slate-800 select-none"
+            onClick={onRulerClick}
+            ref={rulerRef}
+          >
+            <div className="absolute left-0 top-0 bottom-0 w-40 flex items-center justify-center text-xs text-slate-400">
+              Timeline
+            </div>
+
+            {/* Vùng chứa tick: rộng theo duration*scale, tịnh tiến theo scrollLeft để khớp với tracks */}
+            <div
+              className="ml-40 h-full relative"
+              style={{
+                width: duration * scale + 200,
+                transform: `translateX(${-tlScrollLeft}px)`, // đồng bộ với tracks
+              }}
+            >
+              {(() => {
+                // ====== PICK STEP ======
+                const NICE_STEPS = [0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600]; // giây
+                const MIN_LABEL_PX = 64; // tối thiểu px giữa 2 nhãn major
+                const MIN_MINOR_PX = 8;  // tối thiểu px giữa 2 minor
+
+                const pickStep = (pxPerSec: number, minPx = MIN_LABEL_PX) => {
+                  for (const s of NICE_STEPS) if (s * pxPerSec >= minPx) return s;
+                  return NICE_STEPS[NICE_STEPS.length - 1];
+                };
+                const fmtTick = (sec: number, step: number) => {
+                  if (step < 1) {
+                    const digits = step < 0.1 ? 2 : 1;
+                    return `${sec.toFixed(digits)}s`;
+                  }
+                  return fmtTime(sec);
+                };
+
+                // ====== VISIBLE RANGE ======
+                const gutter = 40; // px (cột trái)
+                const visibleWidthPx = Math.max(0, tlClientWidth - gutter);
+                const startSec = Math.max(0, tlScrollLeft / scale);
+                const endSec = Math.min(duration, (tlScrollLeft + visibleWidthPx) / scale);
+
+                const majorStep = pickStep(scale, MIN_LABEL_PX);
+                const minorCand = majorStep / 5;
+                const minorStep = minorCand * scale >= MIN_MINOR_PX ? minorCand : 0;
+
+                const ticks: JSX.Element[] = [];
+
+                // Minor ticks
+                if (minorStep > 0) {
+                  const firstMinor = Math.floor(startSec / minorStep) * minorStep;
+                  for (let t = firstMinor; t <= endSec; t += minorStep) {
+                    ticks.push(
+                      <div
+                        key={`mn-${t.toFixed(3)}`}
+                        className="absolute top-0 h-full border-l border-slate-800/70"
+                        style={{ left: t * scale }}
+                      />
+                    );
+                  }
+                }
+
+                // Major ticks + label
+                const firstMajor = Math.floor(startSec / majorStep) * majorStep;
+                for (let t = firstMajor; t <= endSec; t += majorStep) {
+                  ticks.push(
+                    <div
+                      key={`mj-${t.toFixed(3)}`}
+                      className="absolute top-0 h-full border-l border-slate-700"
+                      style={{ left: t * scale }}
+                    >
+                      <div className="-translate-x-1/2 px-1 text-[10px] text-slate-300">
+                        {fmtTick(Math.max(0, t), majorStep)}
+                      </div>
+                    </div>
+                  );
+                }
+
+                // Playhead
+                ticks.push(
+                  <div
+                    key="playhead"
+                    className="absolute top-0 bottom-0 w-px bg-rose-400"
+                    style={{ left: time * scale }}
+                  />
+                );
+
+                return ticks;
+              })()}
             </div>
           </div>
-          <div className="relative bg-slate-950 overflow-auto" onMouseDown={() => setSelectedId(null)}>
-            <div className="absolute left-0 top-0 bottom-0 w-40 border-r border-slate-800 text-xs text-slate-400">
-              {slide.clips.map(c => (<div key={c.id} className="h-10 flex items-center justify-center border-b border-slate-800 truncate" title={c.type}>{c.type}</div>))}
+
+          {/* TRACKS: scroll ngang & dọc + cập nhật scroll state để ruler biết vùng hiển thị */}
+          <div
+            ref={tlRef}
+            className="relative bg-slate-950 overflow-auto"
+
+            onMouseDown={() => setSelectedId(null)}
+          >
+            {/* Cột nhãn trái */}
+            <div className="absolute left-0 top-0 bottom-0 w-40 border-r border-slate-800 text-xs text-slate-400 bg-slate-950">
+              {slide.clips.map((c) => (
+                <div
+                  key={c.id}
+                  className="h-10 flex items-center justify-center border-b border-slate-800 truncate"
+                  title={c.type}
+                >
+                  {c.type}
+                </div>
+              ))}
             </div>
-            <div className="ml-40 relative" style={{ height: rowH * Math.max(1, slide.clips.length) }}>
+
+            {/* Nội dung timeline: rộng theo duration*scale */}
+            <div
+              className="ml-40 relative"
+              style={{
+                width: duration * scale + 200,
+                height: rowH * Math.max(1, slide.clips.length),
+              }}
+            >
               {slide.clips.map((c, idx) => {
-                const left = c.start * scale, width = Math.max(4, c.duration * scale), selected = selectedId === c.id;
-                return (<div key={c.id} className="h-10 border-b border-slate-900/60 relative">
-                  <div className={`absolute top-1 h-6 rounded-md ${selected ? "bg-sky-500" : "bg-slate-700 hover:bg-slate-600"} cursor-grab active:cursor-grabbing`} style={{ left, width }}
-                    onMouseDown={(e) => onMouseDownClip(e, c, "move", idx)} onClick={(e) => { e.stopPropagation(); setSelectedId(c.id); }}
-                    title={`${c.name || c.id} (${fmtTime(c.start)} - ${fmtTime(c.start + c.duration)})`}>
-                    <div className="absolute left-0 top-0 bottom-0 w-2 cursor-ew-resize bg-white/10 rounded-l" onMouseDown={(e) => onMouseDownClip(e, c, "resize-left", idx)} />
-                    <div className="px-2 text-[10px] truncate leading-6">{c.name || c.id}</div>
-                    <div className="absolute right-0 top-0 bottom-0 w-2 cursor-ew-resize bg-white/10 rounded-r" onMouseDown={(e) => onMouseDownClip(e, c, "resize-right", idx)} />
+                const left = c.start * scale;
+                const width = Math.max(4, c.duration * scale);
+                const selected = selectedId === c.id;
+                return (
+                  <div key={c.id} className="h-10 border-b border-slate-900/60 relative">
+                    <div
+                      className={`absolute top-1 h-6 rounded-md ${selected ? "bg-sky-500" : "bg-slate-700 hover:bg-slate-600"
+                        } cursor-grab active:cursor-grabbing`}
+                      style={{ left, width }}
+                      onMouseDown={(e) => onMouseDownClip(e, c, "move", idx)}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setSelectedId(c.id);
+                      }}
+                      title={`${c.name || c.id} (${fmtTime(c.start)} - ${fmtTime(
+                        c.start + c.duration
+                      )})`}
+                    >
+                      <div
+                        className="absolute left-0 top-0 bottom-0 w-2 cursor-ew-resize bg-white/10 rounded-l"
+                        onMouseDown={(e) => onMouseDownClip(e, c, "resize-left", idx)}
+                      />
+                      <div className="px-2 text-[10px] truncate leading-6">
+                        {c.name || c.id}
+                      </div>
+                      <div
+                        className="absolute right-0 top-0 bottom-0 w-2 cursor-ew-resize bg-white/10 rounded-r"
+                        onMouseDown={(e) => onMouseDownClip(e, c, "resize-right", idx)}
+                      />
+                    </div>
+
+                    {/* Action bars */}
+                    <div className="absolute left-0 right-0 top-7 h-2">
+                      {(c.actions || []).map((a) => {
+                        const aLeft = a.start * scale;
+                        const aWidth = Math.max(2, (a.end - a.start) * scale);
+                        const color =
+                          a.type === "appear"
+                            ? "bg-emerald-400"
+                            : a.type === "move"
+                              ? "bg-indigo-400"
+                              : "bg-amber-400";
+                        return (
+                          <div
+                            key={a.id}
+                            className={`absolute h-2 rounded ${color}`}
+                            style={{ left: aLeft, width: aWidth }}
+                            title={`${a.type} ${fmtTime(a.start)}-${fmtTime(a.end)}`}
+                          />
+                        );
+                      })}
+                    </div>
                   </div>
-                  <div className="absolute left-0 right-0 top-7 h-2">
-                    {(c.actions || []).map(a => {
-                      const aLeft = a.start * scale, aWidth = Math.max(2, (a.end - a.start) * scale);
-                      const color = a.type === "appear" ? "bg-emerald-400" : a.type === "move" ? "bg-indigo-400" : "bg-amber-400";
-                      return <div key={a.id} className={`absolute h-2 rounded ${color}`} style={{ left: aLeft, width: aWidth }} title={`${a.type} ${fmtTime(a.start)}-${fmtTime(a.end)}`} />;
-                    })}
-                  </div>
-                </div>);
+                );
               })}
             </div>
           </div>
         </div>
+
+
       </div>
 
       {/* Right */}
@@ -492,6 +697,38 @@ export default function App() {
                 </select>
               </div>
             </div>)}
+            {selected?.type === "audio" && (
+              <div className="space-y-2 border-t border-neutral-800 pt-3 mt-3">
+                <div className="text-xs font-semibold text-neutral-300">Audio</div>
+
+                <label className="block text-xs text-neutral-400">Source URL</label>
+                <input
+                  className="w-full px-2 py-1 bg-neutral-800 rounded border border-neutral-700 text-sm"
+                  placeholder="https://example.com/audio.mp3"
+                  value={selected.audio?.src || ""}
+                  onChange={(e) =>
+                    setClip(selected.id, {
+                      audio: { ...(selected.audio || {}), src: e.target.value.trim() },
+                    })
+                  }
+                />
+
+                <label className="block text-xs text-neutral-400">Volume</label>
+                <input
+                  type="range"
+                  min={0}
+                  max={1}
+                  step={0.01}
+                  value={selected.audio?.volume ?? 1}
+                  onChange={(e) =>
+                    setClip(selected.id, {
+                      audio: { src: selected.audio?.src || "", volume: parseFloat(e.target.value) },
+                    })
+                  }
+                  className="w-full"
+                />
+              </div>
+            )}
 
             {selected.type === "image" && (<div className="space-y-2">
               <div className="text-xs uppercase text-slate-400">Image</div>
