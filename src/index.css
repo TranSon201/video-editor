@@ -41,4 +41,11 @@
     width: 8px;
     height: 8px;
   }
+
+  
+}
+
+
+.canvas-box {
+  container-type: size; /* Cho phép dùng cqw/cqh bên trong */
 }
